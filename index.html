@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>html{color-scheme:light}body{margin:0}[hidden]{display:none!important}img{max-width:100%}</style>
+<title>Position Reconciler</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<style>
+/* Layout: one narrow working column. Three numbered steps (a real sequence) stack top to bottom; the result table is the widest element and scrolls on its own. */
+:root{
+  --bg:#eceff3; --surface:#ffffff; --surface-2:#f5f7fa; --ink:#101828; --muted:#5b6678; --line:#d8dde5;
+  --accent:#2447e0; --accent-ink:#ffffff; --accent-soft:#e3e9ff;
+  --long:#0c7a4d; --long-soft:#dcf3e8; --short:#bf312b; --short-soft:#fbe4e2; --flat:#5b6678; --flat-soft:#e8ebf0;
+  --warn:#8a5a00; --warn-soft:#fff1cf;
+  --font:"Schibsted Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif; --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0d1117; --surface:#151b24; --surface-2:#1b2230; --ink:#e7ebf2; --muted:#98a3b5; --line:#2a3342;
+  --accent:#7d97ff; --accent-ink:#0d1117; --accent-soft:#1f2a52;
+  --long:#4cd194; --long-soft:#123327; --short:#ff8a82; --short-soft:#3b1b1a; --flat:#98a3b5; --flat-soft:#232b39;
+  --warn:#f2c260; --warn-soft:#3a2c0c; color-scheme:dark; } }
+:root[data-theme="dark"]{
+  --bg:#0d1117; --surface:#151b24; --surface-2:#1b2230; --ink:#e7ebf2; --muted:#98a3b5; --line:#2a3342;
+  --accent:#7d97ff; --accent-ink:#0d1117; --accent-soft:#1f2a52;
+  --long:#4cd194; --long-soft:#123327; --short:#ff8a82; --short-soft:#3b1b1a; --flat:#98a3b5; --flat-soft:#232b39;
+  --warn:#f2c260; --warn-soft:#3a2c0c; color-scheme:dark; }
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--font);font-size:15px;line-height:1.5;margin:0;
+  padding-block:28px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:980px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+h1{font-size:clamp(26px,4vw,34px);line-height:1.1;letter-spacing:-.02em;margin:0;font-weight:700;text-wrap:balance}
+.lede{margin:6px 0 0;color:var(--muted);max-width:60ch}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+.formula{display:inline-flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-top:14px;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:8px 12px}
+.formula b{font-weight:500;color:var(--accent)}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0;padding:0;list-style:none}
+.steps li{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--muted);font-weight:500;min-width:0}
+.steps .n{flex:none;width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:12px;border:1px solid var(--line);background:var(--surface-2)}
+.steps li.on{color:var(--ink);border-color:var(--accent)}
+.steps li.on .n{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.steps li.done .n{background:var(--long-soft);color:var(--long);border-color:var(--long)}
+.steps li.done{color:var(--ink)}
+.steps span.t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px;display:flex;flex-direction:column;gap:16px;min-width:0}
+.card-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.card-h h2{margin:0;font-size:19px;letter-spacing:-.01em}
+.card-h p{margin:2px 0 0;color:var(--muted);font-size:14px}
+.zone{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;text-align:center;padding:28px 16px;border:1.5px dashed var(--line);border-radius:8px;background:var(--surface-2);cursor:pointer;transition:border-color .15s,background .15s}
+.zone:hover,.zone.over{border-color:var(--accent);background:var(--accent-soft)}
+.zone:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.zone input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.zone strong{font-weight:600}
+.zone small{color:var(--muted)}
+.zone.off{cursor:not-allowed;opacity:.6;border-style:solid}
+.zone.off:hover{border-color:var(--line);background:var(--surface-2)}
+.btn{font:inherit;font-weight:600;border-radius:7px;border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:9px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+.btn:hover{border-color:var(--accent)}
+.btn:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn:disabled{opacity:.5;cursor:not-allowed;filter:none}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--muted);padding:6px 8px;font-weight:500}
+.btn.ghost:hover{color:var(--short)}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:var(--surface-2);border:1px solid var(--line);font-size:13px}
+.chip.ok{background:var(--long-soft);border-color:transparent;color:var(--long)}
+.chip.warn{background:var(--warn-soft);border-color:transparent;color:var(--warn)}
+.chip.err{background:var(--short-soft);border-color:transparent;color:var(--short)}
+.shots{display:flex;flex-direction:column;gap:12px}
+.shot{border:1px solid var(--line);border-radius:8px;background:var(--surface-2);padding:12px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.shot-top{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center}
+.letter{width:44px;height:44px;border-radius:8px;display:grid;place-items:center;font-weight:700;font-size:20px;background:var(--accent);color:var(--accent-ink)}
+.thumb{width:44px;height:60px;border-radius:5px;object-fit:cover;object-position:top;border:1px solid var(--line);background:var(--surface)}
+.shot-id{display:flex;gap:12px;align-items:center;min-width:0}
+.shot-meta{min-width:0}
+.shot-meta b{display:block}
+.shot-meta small{display:block;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.shot-side{display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+.shot-side label{font-size:12px;color:var(--muted)}
+select{font:inherit;font-weight:600;padding:8px 32px 8px 12px;border-radius:7px;border:1.5px solid var(--line);background:var(--surface);color:var(--ink);min-width:150px}
+select.need{border-color:var(--accent);background:var(--accent-soft)}
+.status{font-size:13px;color:var(--muted);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.spin{width:14px;height:14px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--accent);animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+details>summary{cursor:pointer;color:var(--accent);font-weight:600;font-size:14px;list-style:none;display:inline-flex;gap:6px}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"▸";transition:transform .15s}
+details[open]>summary::before{transform:rotate(90deg)}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:8px 12px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{font-size:12px;font-weight:600;color:var(--muted);background:var(--surface-2);white-space:normal;vertical-align:bottom}
+td.num,td input.q{font-family:var(--mono);font-variant-numeric:tabular-nums}
+tbody tr:last-child td{border-bottom:0}
+tfoot td{font-weight:600;background:var(--surface-2);border-top:1px solid var(--line);border-bottom:0}
+td input{font:inherit;color:inherit;background:transparent;border:1px solid transparent;border-radius:5px;padding:4px 6px;width:100%;min-width:90px}
+td input.q{text-align:right;min-width:80px}
+td input:hover{border-color:var(--line)}
+td input:focus{border-color:var(--accent);background:var(--surface)}
+.pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.pill.long{background:var(--long-soft);color:var(--long)}
+.pill.short{background:var(--short-soft);color:var(--short)}
+.pill.flat{background:var(--flat-soft);color:var(--flat)}
+td.neg{color:var(--short)} td.pos{color:var(--long)}
+.fin{font-weight:600}
+.note{font-size:13px;color:var(--muted)}
+.err-text{color:var(--short);font-size:14px}
+textarea.md{width:100%;min-height:180px;font-family:var(--mono);font-size:12px;color:var(--ink);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px;resize:vertical}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;font-weight:600;z-index:20}
+@media (max-width:560px){
+  .steps{grid-template-columns:1fr}
+  .shot-top{grid-template-columns:auto 1fr}
+  .shot-side{grid-column:1 / -1;align-items:stretch}
+  .shot-side select{width:100%}
+  .card{padding:16px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+</head>
+<body>
+<div class="wrap" id="app"></div>
+
+<script>
+const MONTHS = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC';
+const ALIASES = { 'MINI GOLDMINI': 'GOLDM', 'MINI SILVERMINI': 'SILVERM', 'GOLDMINI': 'GOLDM', 'SILVERMINI': 'SILVERM' };
+
+function normName(raw) {
+  let s = String(raw || '').toUpperCase().replace(/\s+/g, ' ').trim();
+  s = s.replace(new RegExp('\\s+(?:' + MONTHS + ')\\s*\\d{1,2}$'), '');
+  s = s.replace(/^(NSE|BSE|NFO|MCX|NCDEX)\s+/, '');
+  return ALIASES[s] || s;
+}
+
+// Ledger "OutStanding" section lines -> [{name, qty}]
+function parseLedgerLines(lines) {
+  const start = lines.findIndex(l => /^\s*outstanding\s*:/i.test(l));
+  if (start < 0) return { found: false, rows: [] };
+  const re = /^([A-Z][A-Z0-9&\-]*(?: [A-Z0-9&\-]+)*)\s+(\d{2}[A-Z]{3}\d{4})\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)/;
+  const acc = new Map();
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (/gross exposure/i.test(line)) break;
+    const m = re.exec(line);
+    if (!m) continue;
+    const name = normName(m[1].replace(/\s+[A-Z]$/, ''));
+    const qty = parseFloat(m[3].replace(/,/g, ''));
+    if (!isFinite(qty)) continue;
+    acc.set(name, (acc.get(name) || 0) + qty);
+  }
+  return { found: true, rows: [...acc].map(([name, qty]) => ({ name, qty })) };
+}
+
+// OCR text of a broker "Position" screen -> [{name, qty}] (BUY +, SELL -)
+function parseOcrText(text) {
+  const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const head = new RegExp('(?:^|\\s)(NSE|MCX|NCDEX|MINI|NFO|BSE)\\s+(.+?)\\s+(?:' + MONTHS + ')[a-z]*\\s*\\d{1,2}\\b', 'i');
+  const side = /\b(BUY|SELL)\s*[:\-]?\s*([\d,]+(?:\.\d+)?)/i;
+  const rows = [];
+  let pending = null;
+  const commit = (name, s) => {
+    const q = parseFloat(s[2].replace(/,/g, ''));
+    if (!isFinite(q)) return;
+    rows.push({ name: normName(name), qty: /sell/i.test(s[1]) ? -q : q });
+  };
+  for (const line of lines) {
+    const h = head.exec(line);
+    if (h) {
+      const pre = h[1].toUpperCase();
+      const name = pre === 'NSE' || pre === 'BSE' || pre === 'NFO' ? h[2] : pre + ' ' + h[2];
+      const rest = line.slice(h.index + h[0].length);
+      const s = side.exec(rest);
+      if (s) { commit(name, s); pending = null; } else pending = name;
+      continue;
+    }
+    if (pending) {
+      const s = side.exec(line);
+      if (s) { commit(pending, s); pending = null; }
+    }
+  }
+  return rows;
+}
+
+function rowsFromModel(arr) {
+  const out = [];
+  for (const r of Array.isArray(arr) ? arr : []) {
+    if (!r || !r.name) continue;
+    let q = Math.abs(Number(String(r.qty).replace(/,/g, '')));
+    if (!isFinite(q) || q === 0) continue;
+    if (/sell/i.test(String(r.side))) q = -q;
+    out.push({ name: normName(r.name), qty: q });
+  }
+  return out;
+}
+
+function statusOf(n) {
+  const r = Math.round(n * 1e6) / 1e6;
+  return r > 0 ? 'Long' : r < 0 ? 'Short' : 'Squared Off';
+}
+
+function compute(ledgerRows, shots) {
+  const map = new Map();
+  const get = n => { if (!map.has(n)) map.set(n, { name: n, ledger: 0, half: 0, full: 0 }); return map.get(n); };
+  for (const r of ledgerRows || []) { const n = normName(r.name); if (n) get(n).ledger += Number(r.qty) || 0; }
+  for (const s of shots || []) {
+    if (s.pct !== 50 && s.pct !== 100) continue;
+    for (const r of s.rows) {
+      const n = normName(r.name); if (!n) continue;
+      const q = Number(r.qty) || 0;
+      if (s.pct === 50) get(n).half += q; else get(n).full += q;
+    }
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name)).map(o => {
+    const l23 = o.ledger * 2 / 3, h = o.half * 0.5;
+    const fin = l23 - h - o.full;
+    return { ...o, l23, h, fin, status: statusOf(fin) };
+  });
+}
+
+function fmt(n) {
+  if (n === 0 || Object.is(n, -0)) return '0';
+  const r = Math.round(n * 100) / 100;
+  return r.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+const MD_HEAD = ['Instrument / Asset Name', 'Source 1 Baseline Qty', 'Source 1 (⅔rd Qty)', '50% Screenshots Total Qty', '50% Qty', '100% Screenshots Qty', 'Final Net Balance Qty', 'Position Status'];
+function toMarkdown(rows) {
+  const L = ['| ' + MD_HEAD.join(' | ') + ' |', '|' + MD_HEAD.map(() => '---').join('|') + '|'];
+  for (const r of rows) L.push('| ' + [r.name, fmt(r.ledger), fmt(r.l23), fmt(r.half), fmt(r.h), fmt(r.full), fmt(r.fin), r.status].join(' | ') + ' |');
+  return L.join('\n');
+}
+
+</script>
+<script>
+(function(){
+  var app = document.getElementById('app');
+  var state = { ledger:null, ledgerBusy:false, ledgerErr:'', shots:[], seq:0, showResult:false };
+  var LETTERS = function(i){ var s=''; i=i+0; do { s = String.fromCharCode(65 + (i % 26)) + s; i = Math.floor(i/26) - 1; } while(i >= 0); return s; };
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  function $(sel,root){ return (root||document).querySelector(sel); }
+  var toastT;
+  function toast(msg){ var t=$('#toast'); if(!t){ t=document.createElement('div'); t.id='toast'; t.className='toast'; t.setAttribute('role','status'); document.body.appendChild(t);} t.textContent=msg; t.hidden=false; clearTimeout(toastT); toastT=setTimeout(function(){t.hidden=true;},2200); }
+
+  /* ---------- reading the ledger PDF ---------- */
+  async function readPdf(file){
+    if(!window.pdfjsLib) throw new Error('The PDF reader did not load. Check your connection and reload.');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    var buf = await file.arrayBuffer();
+    var pdf = await pdfjsLib.getDocument({data:buf}).promise;
+    var lines = [];
+    for(var p=1;p<=pdf.numPages;p++){
+      var page = await pdf.getPage(p); var tc = await page.getTextContent();
+      var items = tc.items.filter(function(i){return i.str && i.str.trim();}).map(function(i){return {s:i.str, x:i.transform[4], y:i.transform[5]};});
+      items.sort(function(a,b){return b.y-a.y || a.x-b.x;});
+      var cur=null;
+      items.forEach(function(it){
+        if(cur && Math.abs(cur.y-it.y)<=2.5){ cur.parts.push(it); } else { cur={y:it.y,parts:[it]}; lines.push(cur); }
+      });
+      lines.push({y:0,parts:[]});
+    }
+    return lines.map(function(l){ return l.parts.sort(function(a,b){return a.x-b.x;}).map(function(i){return i.s.trim();}).join(' ').replace(/\s+/g,' '); });
+  }
+  async function onLedger(file){
+    if(!file) return;
+    state.ledgerBusy=true; state.ledgerErr=''; render();
+    try{
+      var lines = await readPdf(file);
+      var res = parseLedgerLines(lines);
+      if(!res.found) throw new Error('Could not find the "OutStanding" section in this PDF. Check that it is the Bill, OutStanding and Financial Ledger report.');
+      if(!res.rows.length) throw new Error('The OutStanding section was found but no open instruments could be read from it.');
+      state.ledger = { fileName:file.name, rows:res.rows };
+    }catch(e){ state.ledgerErr = e.message || String(e); state.ledger=null; }
+    state.ledgerBusy=false; render();
+  }
+
+  /* ---------- reading a screenshot ---------- */
+  async function readWithClaude(file){
+    var c = window.claude; if(!c || !c.use) throw new Error('no-claude');
+    var sample = await c.use('sample'); if(!sample) throw new Error('no-claude');
+    var lim = await sample.limits().catch(function(){return null;});
+    if(!lim || !lim.images) throw new Error('no-claude');
+    var prompt = 'This is a screenshot of a trading app "Position" screen. List every position row whose quantity is fully visible. '
+      + 'Reply with only a JSON array of {"name": string, "side": "BUY" or "SELL", "qty": number}. '
+      + 'name is the instrument as shown, including the exchange prefix, without the expiry date (for example "NSE AUROPHARMA", "MCX COPPER", "MINI GOLDMINI"). '
+      + 'qty is the number after BUY or SELL (2000.0 becomes 2000). Ignore the profit or loss figure on the right and the prices. Skip rows that are cut off at the screen edge. '
+      + 'Example: [{"name":"NSE AUROPHARMA","side":"BUY","qty":2000}]';
+    var arr = await sample.json(prompt,{images:[file],modelTier:'default'});
+    return rowsFromModel(arr);
+  }
+  function upscale(file){
+    return new Promise(function(res,rej){
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload=function(){ var k = img.width < 1200 ? 2 : 1; var c=document.createElement('canvas'); c.width=img.width*k; c.height=img.height*k;
+        var g=c.getContext('2d'); g.filter='grayscale(1) contrast(1.15)'; g.drawImage(img,0,0,c.width,c.height); URL.revokeObjectURL(url); res(c); };
+      img.onerror=function(){ URL.revokeObjectURL(url); rej(new Error('That image could not be opened.')); };
+      img.src=url;
+    });
+  }
+  async function readWithOcr(file, onProgress){
+    if(!window.Tesseract) throw new Error('The text reader did not load. Check your connection and reload.');
+    var canvas = await upscale(file);
+    var work = (async function(){
+      var worker = await Tesseract.createWorker('eng',1,{
+        langPath:'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int',
+        logger:function(m){ if(m && m.status==='recognizing text') onProgress(Math.round(m.progress*100)); }
+      });
+      try{
+        await worker.setParameters({tessedit_pageseg_mode:'6'});
+        var out = await worker.recognize(canvas);
+        return parseOcrText(out.data.text);
+      } finally { try{ await worker.terminate(); }catch(e){} }
+    })();
+    var timeout = new Promise(function(_,rej){ setTimeout(function(){ rej(new Error('Reading took too long.')); },120000); });
+    return Promise.race([work,timeout]);
+  }
+  async function readShot(shot){
+    shot.status='reading'; shot.progress=null; paintShotStatus(shot);
+    try{
+      try{ shot.rows = await readWithClaude(shot.file); shot.engine='Claude vision'; }
+      catch(e){
+        if(e && e.message!=='no-claude' && e.code && e.code!=='images_unavailable') { shot.note='Claude vision was unavailable ('+e.code+'), used text recognition instead.'; }
+        shot.rows = await readWithOcr(shot.file,function(p){ shot.progress=p; paintShotStatus(shot); }); shot.engine='On-device OCR';
+      }
+      shot.status='ready';
+    }catch(e){ shot.status='error'; shot.error=(e&&e.message)||String(e); shot.rows=[]; }
+    paintShotStatus(shot); paintShotRows(shot); refreshAll();
+  }
+  function onShot(file){
+    if(!file) return;
+    if(!/^image\//.test(file.type)){ toast('Choose an image file (PNG, JPG or WebP).'); return; }
+    var shot={ id:++state.seq, file:file, url:URL.createObjectURL(file), pct:null, status:'reading', rows:[], engine:'', note:'' };
+    state.shots.push(shot); state.showResult=false; render(); readShot(shot);
+  }
+
+  /* ---------- render ---------- */
+  function shotLetter(shot){ return LETTERS(state.shots.indexOf(shot)); }
+  function statusHTML(shot){
+    if(shot.status==='reading') return '<span class="spin" aria-hidden="true"></span><span>Reading positions'+(shot.progress!=null?' · '+shot.progress+'%':'…')+'</span>';
+    if(shot.status==='error') return '<span class="chip err">Could not read this screenshot</span><span class="err-text">'+esc(shot.error)+' Add rows below by hand.</span>';
+    var n=shot.rows.length;
+    return '<span class="chip '+(n?'ok':'warn')+'">'+n+' position'+(n===1?'':'s')+' read</span><span>'+esc(shot.engine)+'</span>'+(shot.note?'<span class="note">'+esc(shot.note)+'</span>':'');
+  }
+  function rowsHTML(shot){
+    var body = shot.rows.map(function(r,i){
+      return '<tr><td><input aria-label="Instrument name" data-k="name" data-s="'+shot.id+'" data-i="'+i+'" value="'+esc(r.name)+'"></td>'
+        +'<td><input class="q" aria-label="Quantity" inputmode="decimal" data-k="qty" data-s="'+shot.id+'" data-i="'+i+'" value="'+esc(r.qty)+'"></td>'
+        +'<td style="width:1%"><button class="btn ghost" data-act="del-row" data-s="'+shot.id+'" data-i="'+i+'" aria-label="Remove row">✕</button></td></tr>';
+    }).join('');
+    return '<div class="tw"><table><thead><tr><th>Instrument</th><th>Qty (sell is negative)</th><th></th></tr></thead><tbody>'+(body||'<tr><td colspan="3" class="note">No positions yet.</td></tr>')+'</tbody></table></div>'
+      +'<div class="row"><button class="btn" data-act="add-row" data-s="'+shot.id+'">Add row</button></div>';
+  }
+  function shotHTML(shot){
+    var L=shotLetter(shot);
+    var sel='<label for="pct-'+shot.id+'">Share to take</label><select id="pct-'+shot.id+'" data-act="pct" data-s="'+shot.id+'" class="'+(shot.pct?'':'need')+'">'
+      +(shot.pct?'':'<option value="" selected disabled>Choose share…</option>')
+      +'<option value="50"'+(shot.pct===50?' selected':'')+'>50%</option><option value="100"'+(shot.pct===100?' selected':'')+'>100%</option></select>';
+    return '<div class="shot" id="shot-'+shot.id+'"><div class="shot-top"><div class="shot-id"><div class="letter" aria-hidden="true">'+L+'</div><img class="thumb" alt="Preview of screenshot '+L+'" src="'+shot.url+'"></div>'
+      +'<div class="shot-meta"><b>Screenshot '+L+'</b><small>'+esc(shot.file.name)+'</small><div class="status" id="st-'+shot.id+'" aria-live="polite">'+statusHTML(shot)+'</div></div>'
+      +'<div class="shot-side">'+sel+'<button class="btn ghost" data-act="del-shot" data-s="'+shot.id+'">Remove</button></div></div>'
+      +'<details'+(shot.status==='error'?' open':'')+'><summary>Review and edit positions</summary><div id="rows-'+shot.id+'" style="display:flex;flex-direction:column;gap:10px;margin-top:10px">'+rowsHTML(shot)+'</div></details></div>';
+  }
+  function paintShotStatus(shot){ var el=$('#st-'+shot.id); if(el) el.innerHTML=statusHTML(shot); }
+  function paintShotRows(shot){ var el=$('#rows-'+shot.id); if(el) el.innerHTML=rowsHTML(shot); }
+
+  function ledgerCard(){
+    var L=state.ledger, inner;
+    if(state.ledgerBusy) inner='<div class="status"><span class="spin" aria-hidden="true"></span><span>Reading the ledger…</span></div>';
+    else if(!L) inner='<label class="zone" id="zone-ledger"><input type="file" id="in-ledger" accept="application/pdf,.pdf"><strong>Drop the ledger PDF here, or choose a file</strong><small>Reads the OutStanding section and takes ⅔ of each net quantity</small></label>'+(state.ledgerErr?'<div class="err-text" role="alert">'+esc(state.ledgerErr)+'</div>':'');
+    else {
+      var rows=L.rows.map(function(r,i){ return '<tr><td><input aria-label="Instrument name" data-k="lname" data-i="'+i+'" value="'+esc(r.name)+'"></td><td><input class="q" aria-label="Net quantity" inputmode="decimal" data-k="lqty" data-i="'+i+'" value="'+esc(r.qty)+'"></td><td class="num" id="l23-'+i+'">'+fmt(r.qty*2/3)+'</td><td style="width:1%"><button class="btn ghost" data-act="del-ledger-row" data-i="'+i+'" aria-label="Remove row">✕</button></td></tr>'; }).join('');
+      inner='<div class="row"><span class="chip ok">'+esc(L.fileName)+'</span><span class="chip">'+L.rows.length+' open instruments</span><button class="btn" data-act="replace-ledger">Replace PDF</button></div>'
+        +'<details><summary>Review ledger quantities</summary><div style="margin-top:10px" class="tw"><table><thead><tr><th>Instrument</th><th>Net qty</th><th>× ⅔</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></details>'
+        +'<input type="file" id="in-ledger" accept="application/pdf,.pdf" hidden>';
+    }
+    return '<section class="card" aria-labelledby="h1"><div class="card-h"><div><h2 id="h1">Ledger PDF</h2><p>Source 1. Every open quantity is multiplied by ⅔.</p></div></div>'+inner+'</section>';
+  }
+  function shotsCard(){
+    var pending = state.shots.find(function(s){return !s.pct;});
+    var next = LETTERS(state.shots.length);
+    var zone = !state.ledger
+      ? '<div class="zone off" aria-disabled="true"><strong>Upload the ledger first</strong><small>Screenshots unlock after step 1</small></div>'
+      : pending
+      ? '<div class="zone off" aria-disabled="true"><strong>Choose 50% or 100% for screenshot '+shotLetter(pending)+' to continue</strong><small>Then you can add screenshot '+next+'</small></div>'
+      : '<label class="zone" id="zone-shot"><input type="file" id="in-shot" accept="image/*"><strong>Add screenshot '+next+'</strong><small>Drop an image or choose a file. PNG, JPG or WebP</small></label>';
+    var ready = state.ledger && state.shots.length && !pending && !state.shots.some(function(s){return s.status==='reading';});
+    return '<section class="card" aria-labelledby="h2"><div class="card-h"><div><h2 id="h2">App screenshots</h2><p>Each screenshot is named A, B, C and gets either 50% or 100% of its quantities.</p></div></div>'
+      +'<div class="shots" id="shots">'+state.shots.map(shotHTML).join('')+'</div>'+zone
+      +'<div class="row"><button class="btn primary" data-act="calc" '+(ready?'':'disabled')+'>Show final table</button>'
+      +(ready?'':'<span class="note">'+(!state.ledger?'Add the ledger PDF first.':!state.shots.length?'Add at least one screenshot.':pending?'Choose a share for every screenshot.':'Waiting for screenshots to finish reading…')+'</span>')+'</div></section>';
+  }
+  function resultInner(){
+    var rows = compute(state.ledger.rows, state.shots);
+    var c={Long:0,Short:0,'Squared Off':0}; rows.forEach(function(r){c[r.status]++;});
+    var t = rows.reduce(function(a,r){a.ledger+=r.ledger;a.l23+=r.l23;a.half+=r.half;a.h+=r.h;a.full+=r.full;a.fin+=r.fin;return a;},{ledger:0,l23:0,half:0,h:0,full:0,fin:0});
+    var body = rows.map(function(r){
+      var cls = r.status==='Long'?'long':r.status==='Short'?'short':'flat';
+      return '<tr><td>'+esc(r.name)+'</td><td class="num">'+fmt(r.ledger)+'</td><td class="num">'+fmt(r.l23)+'</td><td class="num">'+fmt(r.half)+'</td><td class="num">'+fmt(r.h)+'</td><td class="num">'+fmt(r.full)+'</td><td class="num fin '+(r.fin<0&&r.status==='Short'?'neg':r.status==='Long'?'pos':'')+'">'+fmt(r.fin)+'</td><td><span class="pill '+cls+'">'+r.status+'</span></td></tr>';
+    }).join('');
+    var used = state.shots.map(function(s){return shotLetter(s)+' ('+s.pct+'%)';}).join(', ');
+    return '<div class="card-h"><div><h2 id="h3">Final net position</h2><p>'+rows.length+' instruments · '+c.Long+' long · '+c.Short+' short · '+c['Squared Off']+' squared off · Screenshots: '+esc(used)+'</p></div>'
+      +'<div class="row"><button class="btn" data-act="copy-md">Copy markdown</button><button class="btn primary" data-act="download">Download .xlsx</button></div></div>'
+      +'<div class="tw"><table><thead><tr><th>Instrument / Asset Name</th><th>Source 1 Baseline Qty</th><th>Source 1 (⅔rd Qty)</th><th>50% Screenshots Total Qty</th><th>50% Qty</th><th>100% Screenshots Qty</th><th>Final Net Balance Qty</th><th>Position Status</th></tr></thead><tbody>'+body+'</tbody>'
+      +'<tfoot><tr><td>Total</td><td class="num">'+fmt(t.ledger)+'</td><td class="num">'+fmt(t.l23)+'</td><td class="num">'+fmt(t.half)+'</td><td class="num">'+fmt(t.h)+'</td><td class="num">'+fmt(t.full)+'</td><td class="num">'+fmt(t.fin)+'</td><td></td></tr></tfoot></table></div>'
+      +'<p class="note">Final = ⅔ of ledger − 50% of the 50% screenshots − 100% of the 100% screenshots. Positive is long, negative is short, zero is squared off. Missing instruments count as 0. Totals mix units (shares and lots), so use them only as a check.</p>'
+      +'<details><summary>Markdown table</summary><textarea class="md" id="md" readonly>'+esc(toMarkdown(rows))+'</textarea></details>';
+  }
+  function resultCard(){ return state.showResult && state.ledger ? '<section class="card" id="result" aria-labelledby="h3">'+resultInner()+'</section>' : ''; }
+  function stepsHTML(){
+    var s1=state.ledger?'done':'on', s2=state.ledger?(state.shots.length&&!state.shots.some(function(x){return !x.pct;})?'done':'on'):'', s3=state.showResult?'on':'';
+    return '<ol class="steps"><li class="'+s1+'"><span class="n">'+(s1==='done'?'✓':'1')+'</span><span class="t">Ledger PDF</span></li><li class="'+s2+'"><span class="n">'+(s2==='done'?'✓':'2')+'</span><span class="t">Screenshots</span></li><li class="'+s3+'"><span class="n">3</span><span class="t">Final table</span></li></ol>';
+  }
+  function render(){
+    app.innerHTML = '<header><p class="eyebrow">Net open position</p><h1>Position Reconciler</h1><p class="lede">Upload the ledger PDF, then your broker screenshots one at a time. Get the adjusted net position for every instrument.</p>'
+      +'<div class="formula"><span>Final</span><b>=</b><span>⅔ × Ledger</span><b>−</b><span>50% × Shots</span><b>−</b><span>100% × Shots</span></div></header>'
+      +'<div id="steps">'+stepsHTML()+'</div>'+ledgerCard()+shotsCard()+resultCard();
+    bindZones();
+  }
+  function refreshAll(){
+    var st=$('#steps'); if(st) st.innerHTML=stepsHTML();
+    var res=$('#result'); if(res && state.ledger) res.innerHTML=resultInner();
+    // update the action row without rebuilding the cards that hold open selects/inputs
+    var btn=$('[data-act="calc"]'); if(btn){ var host=btn.parentElement; var fresh=document.createElement('div'); fresh.innerHTML=shotsCard(); var nr=fresh.querySelector('[data-act="calc"]').parentElement; host.innerHTML=nr.innerHTML; var z=$('#zone-shot, .zone.off', $('.card[aria-labelledby="h2"]')); var nz=fresh.querySelector('#zone-shot, .zone.off'); if(z&&nz&&z.outerHTML!==nz.outerHTML){ z.replaceWith(nz); bindZones(); } }
+  }
+  function bindZones(){
+    ['ledger','shot'].forEach(function(k){
+      var input=$('#in-'+k), zone=$('#zone-'+k);
+      if(input) input.onchange=function(){ var f=input.files&&input.files[0]; input.value=''; if(f) (k==='ledger'?onLedger:onShot)(f); };
+      if(zone){
+        ['dragenter','dragover'].forEach(function(ev){ zone.addEventListener(ev,function(e){e.preventDefault();zone.classList.add('over');}); });
+        ['dragleave','drop'].forEach(function(ev){ zone.addEventListener(ev,function(e){e.preventDefault();zone.classList.remove('over');}); });
+        zone.addEventListener('drop',function(e){ var f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0]; if(f) (k==='ledger'?onLedger:onShot)(f); });
+      }
+    });
+  }
+
+  /* ---------- events ---------- */
+  function shotById(id){ return state.shots.find(function(s){return s.id===Number(id);}); }
+  app.addEventListener('change',function(e){
+    var t=e.target;
+    if(t.matches('select[data-act="pct"]')){ var s=shotById(t.dataset.s); s.pct=Number(t.value); t.classList.remove('need'); var ph=t.querySelector('option[disabled]'); if(ph) ph.remove(); state.showResult=state.showResult; render(); }
+  });
+  app.addEventListener('input',function(e){
+    var t=e.target, k=t.dataset&&t.dataset.k; if(!k) return;
+    if(k==='lname') state.ledger.rows[+t.dataset.i].name=t.value;
+    else if(k==='lqty'){ var v=parseFloat(String(t.value).replace(/,/g,'')); state.ledger.rows[+t.dataset.i].qty=isFinite(v)?v:0; var c=$('#l23-'+t.dataset.i); if(c) c.textContent=fmt((isFinite(v)?v:0)*2/3); }
+    else { var s=shotById(t.dataset.s), r=s.rows[+t.dataset.i]; if(k==='name') r.name=t.value; else { var q=parseFloat(String(t.value).replace(/,/g,'')); r.qty=isFinite(q)?q:0; } }
+    var res=$('#result'); if(res && state.ledger) res.innerHTML=resultInner();
+  });
+  app.addEventListener('click',function(e){
+    var b=e.target.closest('[data-act]'); if(!b || b.tagName==='SELECT') return;
+    var a=b.dataset.act;
+    if(a==='replace-ledger'){ var i=$('#in-ledger'); if(i) i.click(); return; }
+    if(a==='del-ledger-row'){ state.ledger.rows.splice(+b.dataset.i,1); render(); return; }
+    if(a==='del-shot'){ var s=shotById(b.dataset.s); try{URL.revokeObjectURL(s.url);}catch(_){} state.shots.splice(state.shots.indexOf(s),1); state.showResult=false; render(); return; }
+    if(a==='add-row'){ var s2=shotById(b.dataset.s); s2.rows.push({name:'',qty:0}); paintShotRows(s2); refreshAll(); return; }
+    if(a==='del-row'){ var s3=shotById(b.dataset.s); s3.rows.splice(+b.dataset.i,1); paintShotRows(s3); paintShotStatus(s3); refreshAll(); return; }
+    if(a==='calc'){ state.showResult=true; render(); var r=$('#result'); if(r) r.scrollIntoView({behavior:'smooth',block:'start'}); return; }
+    if(a==='copy-md'){ copyMarkdown(); return; }
+    if(a==='download'){ downloadXlsx(); return; }
+  });
+  // the "Replace PDF" hidden input lives inside the ledger card
+  app.addEventListener('change',function(e){ if(e.target.id==='in-ledger'){ var f=e.target.files&&e.target.files[0]; e.target.value=''; if(f) onLedger(f); } });
+
+  async function copyMarkdown(){
+    var md=toMarkdown(compute(state.ledger.rows,state.shots));
+    try{ await navigator.clipboard.writeText(md); toast('Markdown copied'); }
+    catch(_){ var d=$('#result details'); if(d) d.open=true; var ta=$('#md'); if(ta){ ta.focus(); ta.select(); } toast('Select the text and copy it'); }
+  }
+  function buildWorkbook(){
+    var rows=compute(state.ledger.rows,state.shots), n=rows.length;
+    var H=['Instrument / Asset Name','Source 1 Baseline Qty','Source 1 (2/3rd Qty)','50% Screenshots Total Qty','50% Qty','100% Screenshots Qty','Final Net Balance Qty','Position Status'];
+    var ws={}, num=function(v,f){ var c={t:'n',v:v}; if(f) c.f=f; return c; };
+    H.forEach(function(h,i){ ws[XLSX.utils.encode_cell({r:0,c:i})]={t:'s',v:h}; });
+    rows.forEach(function(r,i){ var R=i+2;
+      ws['A'+R]={t:'s',v:r.name}; ws['B'+R]=num(r.ledger); ws['C'+R]=num(r.l23,'B'+R+'*2/3'); ws['D'+R]=num(r.half); ws['E'+R]=num(r.h,'D'+R+'*0.5'); ws['F'+R]=num(r.full);
+      ws['G'+R]=num(r.fin,'C'+R+'-E'+R+'-F'+R);
+      ws['H'+R]={t:'s',v:r.status,f:'IF(ROUND(G'+R+',6)>0,"Long",IF(ROUND(G'+R+',6)<0,"Short","Squared Off"))'};
+    });
+    var T=n+2; ws['A'+T]={t:'s',v:'Total'};
+    ['B','C','D','E','F','G'].forEach(function(col){ var key={B:'ledger',C:'l23',D:'half',E:'h',F:'full',G:'fin'}[col]; ws[col+T]=num(rows.reduce(function(a,r){return a+r[key];},0),'SUM('+col+'2:'+col+(n+1)+')'); });
+    ws['A'+(T+2)]={t:'s',v:'Final = 2/3 x Ledger - 50% x (50% screenshots) - 100% x (100% screenshots). Positive = Long, negative = Short, zero = Squared Off. Totals mix shares and lots.'};
+    ws['!ref']='A1:H'+(T+2); ws['!cols']=[{wch:26},{wch:18},{wch:18},{wch:22},{wch:12},{wch:20},{wch:22},{wch:16}];
+    var wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Reconciliation');
+    var inp=[['Source','Share taken','Instrument','Qty']];
+    state.ledger.rows.forEach(function(r){ inp.push(['Ledger','2/3',normName(r.name),r.qty]); });
+    state.shots.forEach(function(s){ s.rows.forEach(function(r){ inp.push(['Screenshot '+shotLetter(s),s.pct+'%',normName(r.name),r.qty]); }); });
+    var w2=XLSX.utils.aoa_to_sheet(inp); w2['!cols']=[{wch:16},{wch:12},{wch:26},{wch:12}]; XLSX.utils.book_append_sheet(wb,w2,'Inputs');
+    return wb;
+  }
+  async function downloadXlsx(){
+    if(!window.XLSX){ toast('The spreadsheet library did not load. Reload the page.'); return; }
+    var bytes=XLSX.write(buildWorkbook(),{bookType:'xlsx',type:'array'}); var name='Net_Position_Reconciliation.xlsx';
+    var blob=new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    try{ var dl=window.claude&&window.claude.use?await window.claude.use('downloads'):null; if(dl){ await dl.save({filename:name,data:blob}); toast('Saved'); return; } }
+    catch(e){ if(e&&e.code==='declined') return; }
+    var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(a.href);},4000);
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
