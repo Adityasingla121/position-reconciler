@@ -499,24 +499,16 @@ function toMarkdown(rows) {
     catch(_){ var d=$('#result details'); if(d) d.open=true; var ta=$('#md'); if(ta){ ta.focus(); ta.select(); } toast('Select the text and copy it'); }
   }
   function buildWorkbook(){
-    var rows=compute(state.ledger.rows,state.shots), n=rows.length;
-    var H=['Instrument / Asset Name','Source 1 Baseline Qty','Source 1 (2/3rd Qty)','50% Screenshots Total Qty','50% Qty','100% Screenshots Qty','Final Net Balance Qty','Position Status'];
-    var ws={}, num=function(v,f){ var c={t:'n',v:v}; if(f) c.f=f; return c; };
-    H.forEach(function(h,i){ ws[XLSX.utils.encode_cell({r:0,c:i})]={t:'s',v:h}; });
-    rows.forEach(function(r,i){ var R=i+2;
-      ws['A'+R]={t:'s',v:r.name}; ws['B'+R]=num(r.ledger); ws['C'+R]=num(r.l23,'B'+R+'*2/3'); ws['D'+R]=num(r.half); ws['E'+R]=num(r.h,'D'+R+'*0.5'); ws['F'+R]=num(r.full);
-      ws['G'+R]=num(r.fin,'C'+R+'-E'+R+'-F'+R);
-      ws['H'+R]={t:'s',v:r.status,f:'IF(ROUND(G'+R+',6)>0,"Long",IF(ROUND(G'+R+',6)<0,"Short","Squared Off"))'};
+    var rows=compute(state.ledger.rows,state.shots);
+    var ws={};
+    ws['A1']={t:'s',v:'Script Name'}; ws['B1']={t:'s',v:'Final Net Position'};
+    rows.forEach(function(r,i){
+      var R=i+2;
+      ws['A'+R]={t:'s',v:r.name};
+      ws['B'+R]={t:'n',v:Math.round(r.fin*100)/100,z:'#,##0.00;-#,##0.00;0'};
     });
-    var T=n+2; ws['A'+T]={t:'s',v:'Total'};
-    ['B','C','D','E','F','G'].forEach(function(col){ var key={B:'ledger',C:'l23',D:'half',E:'h',F:'full',G:'fin'}[col]; ws[col+T]=num(rows.reduce(function(a,r){return a+r[key];},0),'SUM('+col+'2:'+col+(n+1)+')'); });
-    ws['A'+(T+2)]={t:'s',v:'Final = 2/3 x Ledger - 50% x (50% screenshots) - 100% x (100% screenshots). Positive = Long, negative = Short, zero = Squared Off. Totals mix shares and lots.'};
-    ws['!ref']='A1:H'+(T+2); ws['!cols']=[{wch:26},{wch:18},{wch:18},{wch:22},{wch:12},{wch:20},{wch:22},{wch:16}];
-    var wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Reconciliation');
-    var inp=[['Source','Share taken','Instrument','Qty']];
-    state.ledger.rows.forEach(function(r){ inp.push(['Ledger','2/3',normName(r.name),r.qty]); });
-    state.shots.forEach(function(s){ s.rows.forEach(function(r){ inp.push(['Screenshot '+shotLetter(s),s.pct+'%',normName(r.name),r.qty]); }); });
-    var w2=XLSX.utils.aoa_to_sheet(inp); w2['!cols']=[{wch:16},{wch:12},{wch:26},{wch:12}]; XLSX.utils.book_append_sheet(wb,w2,'Inputs');
+    ws['!ref']='A1:B'+(rows.length+1); ws['!cols']=[{wch:26},{wch:20}];
+    var wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Net Position');
     return wb;
   }
   async function downloadXlsx(){
