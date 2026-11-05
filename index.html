@@ -513,7 +513,7 @@ function toMarkdown(rows) {
   }
   async function downloadXlsx(){
     if(!window.XLSX){ toast('The spreadsheet library did not load. Reload the page.'); return; }
-    var bytes=XLSX.write(buildWorkbook(),{bookType:'xlsx',type:'array'}); var name='Net_Position_Reconciliation.xlsx';
+    var bytes=XLSX.write(buildWorkbook(),{bookType:'xlsx',type:'array'}); var d=new Date(), pad=function(n){return String(n).padStart(2,'0');}; var name='Net_Position_Reconciliation_'+d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'.xlsx';
     var blob=new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
     try{ var dl=window.claude&&window.claude.use?await window.claude.use('downloads'):null; if(dl){ await dl.save({filename:name,data:blob}); toast('Saved'); return; } }
     catch(e){ if(e&&e.code==='declined') return; }
