@@ -186,9 +186,11 @@ function parseLedgerPage(lines) {
     }
     const isSale = buyX !== null && saleX !== null && center !== null && Math.abs(center - saleX) < Math.abs(center - buyX);
     if (isSale) { qty = -qty; sales++; } else buys++;
-    acc.set(name, (acc.get(name) || 0) + qty);
+    const rate = parseFloat(m[4].replace(/,/g, ''));
+    const prev = acc.get(name) || { qty: 0, rate: null };
+    acc.set(name, { qty: prev.qty + qty, rate: isFinite(rate) ? rate : prev.rate });
   }
-  const rows = [...acc].map(([name, qty]) => ({ name, qty }));
+  const rows = [...acc].map(([name, v]) => ({ name, qty: v.qty, rate: v.rate }));
   const warn = (buyX === null || saleX === null) ? 'The Buy and Sale column headings were not found, so every quantity was read as Buy (positive). Check the signs below.' : '';
   return { found: true, rows, buys, sales, warn };
 }
@@ -500,14 +502,23 @@ function toMarkdown(rows) {
   }
   function buildWorkbook(){
     var rows=compute(state.ledger.rows,state.shots);
+    var rate={}; state.ledger.rows.forEach(function(r){ if(r.rate!=null && isFinite(r.rate)) rate[normName(r.name)]=r.rate; });
+    var d=new Date(), pad=function(n){return String(n).padStart(2,'0');};
+    var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
     var ws={};
-    ws['A1']={t:'s',v:'Script Name'}; ws['B1']={t:'s',v:'Final Net Position'};
+    ws['A1']={t:'s',v:'Generated on: '+days[d.getDay()]+', '+pad(d.getDate())+'-'+pad(d.getMonth()+1)+'-'+d.getFullYear()};
+    ['S No.','Script Name','Final Net Position','Long / Short','Closing Rate'].forEach(function(h,c){ ws[XLSX.utils.encode_cell({r:2,c:c})]={t:'s',v:h}; });
     rows.forEach(function(r,i){
-      var R=i+2;
-      ws['A'+R]={t:'s',v:r.name};
-      ws['B'+R]={t:'n',v:Math.round(r.fin*100)/100,z:'#,##0.00;-#,##0.00;0'};
+      var R=i+4;
+      ws['A'+R]={t:'n',v:i+1};
+      ws['B'+R]={t:'s',v:r.name};
+      ws['C'+R]={t:'n',v:Math.round(r.fin*100)/100,z:'#,##0.00;-#,##0.00;0'};
+      ws['D'+R]={t:'s',v:r.status};
+      if(rate[r.name]!=null) ws['E'+R]={t:'n',v:rate[r.name],z:'#,##0.00'};
     });
-    ws['!ref']='A1:B'+(rows.length+1); ws['!cols']=[{wch:26},{wch:20}];
+    ws['!ref']='A1:E'+(rows.length+3);
+    ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:4}}];
+    ws['!cols']=[{wch:8},{wch:26},{wch:20},{wch:14},{wch:16}];
     var wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Net Position');
     return wb;
   }
