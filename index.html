@@ -112,6 +112,7 @@ td input:focus{border-color:var(--accent);background:var(--surface)}
 td.neg{color:var(--short)} td.pos{color:var(--long)}
 .fin{font-weight:600}
 .note{font-size:13px;color:var(--muted)}
+.opt{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 8px;margin-left:6px;vertical-align:middle}
 .err-text{color:var(--short);font-size:14px}
 textarea.md{width:100%;min-height:180px;font-family:var(--mono);font-size:12px;color:var(--ink);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px;resize:vertical}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;font-weight:600;z-index:20}
@@ -267,10 +268,20 @@ function fmt(n) {
   return r.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
-const MD_HEAD = ['Instrument / Asset Name', 'Source 1 Baseline Qty', 'Source 1 (⅔rd Qty)', '50% Screenshots Total Qty', '50% Qty', '100% Screenshots Qty', 'Final Net Balance Qty', 'Position Status'];
-function toMarkdown(rows) {
-  const L = ['| ' + MD_HEAD.join(' | ') + ' |', '|' + MD_HEAD.map(() => '---').join('|') + '|'];
-  for (const r of rows) L.push('| ' + [r.name, fmt(r.ledger), fmt(r.l23), fmt(r.half), fmt(r.h), fmt(r.full), fmt(r.fin), r.status].join(' | ') + ' |');
+const MD_COLS = [
+  ['Instrument / Asset Name', r => r.name, false],
+  ['Source 1 Baseline Qty', r => fmt(r.ledger), true],
+  ['Source 1 (⅔rd Qty)', r => fmt(r.l23), true],
+  ['50% Screenshots Total Qty', r => fmt(r.half), false],
+  ['50% Qty', r => fmt(r.h), false],
+  ['100% Screenshots Qty', r => fmt(r.full), false],
+  ['Final Net Balance Qty', r => fmt(r.fin), false],
+  ['Position Status', r => r.status, false],
+];
+function toMarkdown(rows, hideLedger) {
+  const cols = MD_COLS.filter(c => !(hideLedger && c[2]));
+  const L = ['| ' + cols.map(c => c[0]).join(' | ') + ' |', '|' + cols.map(() => '---').join('|') + '|'];
+  for (const r of rows) L.push('| ' + cols.map(c => c[1](r)).join(' | ') + ' |');
   return L.join('\n');
 }
 
@@ -402,56 +413,68 @@ function toMarkdown(rows) {
     else if(!L) inner='<label class="zone" id="zone-ledger"><input type="file" id="in-ledger" accept="application/pdf,.pdf"><strong>Drop the ledger PDF here, or choose a file</strong><small>Reads only the last page. Quantities under Sale become negative, then ⅔ is taken</small></label>'+(state.ledgerErr?'<div class="err-text" role="alert">'+esc(state.ledgerErr)+'</div>':'');
     else {
       var rows=L.rows.map(function(r,i){ return '<tr><td><input aria-label="Instrument name" data-k="lname" data-i="'+i+'" value="'+esc(r.name)+'"></td><td><input class="q" aria-label="Net quantity" inputmode="decimal" data-k="lqty" data-i="'+i+'" value="'+esc(r.qty)+'"></td><td class="num" id="l23-'+i+'">'+fmt(r.qty*2/3)+'</td><td style="width:1%"><button class="btn ghost" data-act="del-ledger-row" data-i="'+i+'" aria-label="Remove row">✕</button></td></tr>'; }).join('');
-      inner='<div class="row"><span class="chip ok">'+esc(L.fileName)+'</span><span class="chip">'+L.rows.length+' open instruments</span><span class="chip">'+L.rows.filter(function(r){return r.qty>=0;}).length+' buy</span><span class="chip warn">'+L.rows.filter(function(r){return r.qty<0;}).length+' sale (negative)</span>'+(L.warn?'<span class="chip err">'+esc(L.warn)+'</span>':'')+'</div><div class="row"><button class="btn" data-act="replace-ledger">Replace PDF</button></div>'
+      inner='<div class="row"><span class="chip ok">'+esc(L.fileName)+'</span><span class="chip">'+L.rows.length+' open instruments</span><span class="chip">'+L.rows.filter(function(r){return r.qty>=0;}).length+' buy</span><span class="chip warn">'+L.rows.filter(function(r){return r.qty<0;}).length+' sale (negative)</span>'+(L.warn?'<span class="chip err">'+esc(L.warn)+'</span>':'')+'</div><div class="row"><button class="btn" data-act="replace-ledger">Replace PDF</button><button class="btn ghost" data-act="remove-ledger">Remove PDF</button></div>'
         +'<details><summary>Review ledger quantities</summary><div style="margin-top:10px" class="tw"><table><thead><tr><th>Instrument</th><th>Net qty (sale is negative)</th><th>× ⅔</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></details>'
         +'<input type="file" id="in-ledger" accept="application/pdf,.pdf" hidden>';
     }
-    return '<section class="card" aria-labelledby="h1"><div class="card-h"><div><h2 id="h1">Ledger PDF</h2><p>Source 1. Last page only. Sale quantities are negative, and every quantity is multiplied by ⅔.</p></div></div>'+inner+'</section>';
+    return '<section class="card" aria-labelledby="h1"><div class="card-h"><div><h2 id="h1">Ledger PDF <span class="opt">optional</span></h2><p>Source 1. Add it to include the ledger. Without it, only the screenshots are used. Last page only, Sale quantities are negative, and every quantity is multiplied by ⅔.</p></div></div>'+inner+'</section>';
   }
+  function ledgerRows(){ return state.ledger ? state.ledger.rows : []; }
+  function pendingShot(){ return state.shots.find(function(s){return !s.pct;}); }
+  function canCalc(){ return (!!state.ledger || state.shots.length>0) && !pendingShot() && !state.shots.some(function(s){return s.status==='reading';}); }
   function shotsCard(){
-    var pending = state.shots.find(function(s){return !s.pct;});
+    var pending = pendingShot();
     var next = LETTERS(state.shots.length);
-    var zone = !state.ledger
-      ? '<div class="zone off" aria-disabled="true"><strong>Upload the ledger first</strong><small>Screenshots unlock after step 1</small></div>'
-      : pending
+    var zone = pending
       ? '<div class="zone off" aria-disabled="true"><strong>Choose 50% or 100% for screenshot '+shotLetter(pending)+' to continue</strong><small>Then you can add screenshot '+next+'</small></div>'
       : '<label class="zone" id="zone-shot"><input type="file" id="in-shot" accept="image/*"><strong>Add screenshot '+next+'</strong><small>Drop an image or choose a file. PNG, JPG or WebP</small></label>';
-    var ready = state.ledger && state.shots.length && !pending && !state.shots.some(function(s){return s.status==='reading';});
+    var ready = canCalc();
+    var hint = ready ? '' : (pending ? 'Choose a share for every screenshot.' : state.shots.length ? 'Waiting for screenshots to finish reading…' : 'Add a screenshot to begin.');
     return '<section class="card" aria-labelledby="h2"><div class="card-h"><div><h2 id="h2">App screenshots</h2><p>Each screenshot is named A, B, C and gets either 50% or 100% of its quantities.</p></div></div>'
       +'<div class="shots" id="shots">'+state.shots.map(shotHTML).join('')+'</div>'+zone
-      +'<div class="row"><button class="btn primary" data-act="calc" '+(ready?'':'disabled')+'>Show final table</button>'
-      +(ready?'':'<span class="note">'+(!state.ledger?'Add the ledger PDF first.':!state.shots.length?'Add at least one screenshot.':pending?'Choose a share for every screenshot.':'Waiting for screenshots to finish reading…')+'</span>')+'</div></section>';
+      +'<div class="row"><button class="btn primary" data-act="calc" '+(ready?'':'disabled')+'>Show final table</button><button class="btn" data-act="download" '+(ready?'':'disabled')+'>Download spreadsheet</button>'
+      +(hint?'<span class="note">'+hint+'</span>':'')+'</div></section>';
   }
   function resultInner(){
-    var rows = compute(state.ledger.rows, state.shots);
+    var hasL = !!state.ledger;
+    var rows = compute(ledgerRows(), state.shots);
     var c={Long:0,Short:0,'Squared Off':0}; rows.forEach(function(r){c[r.status]++;});
     var t = rows.reduce(function(a,r){a.ledger+=r.ledger;a.l23+=r.l23;a.half+=r.half;a.h+=r.h;a.full+=r.full;a.fin+=r.fin;return a;},{ledger:0,l23:0,half:0,h:0,full:0,fin:0});
     var body = rows.map(function(r){
       var cls = r.status==='Long'?'long':r.status==='Short'?'short':'flat';
-      return '<tr><td>'+esc(r.name)+'</td><td class="num">'+fmt(r.ledger)+'</td><td class="num">'+fmt(r.l23)+'</td><td class="num">'+fmt(r.half)+'</td><td class="num">'+fmt(r.h)+'</td><td class="num">'+fmt(r.full)+'</td><td class="num fin '+(r.fin<0&&r.status==='Short'?'neg':r.status==='Long'?'pos':'')+'">'+fmt(r.fin)+'</td><td><span class="pill '+cls+'">'+r.status+'</span></td></tr>';
+      return '<tr><td>'+esc(r.name)+'</td>'+(hasL?'<td class="num">'+fmt(r.ledger)+'</td><td class="num">'+fmt(r.l23)+'</td>':'')
+        +'<td class="num">'+fmt(r.half)+'</td><td class="num">'+fmt(r.h)+'</td><td class="num">'+fmt(r.full)+'</td><td class="num fin '+(r.fin<0&&r.status==='Short'?'neg':r.status==='Long'?'pos':'')+'">'+fmt(r.fin)+'</td><td><span class="pill '+cls+'">'+r.status+'</span></td></tr>';
     }).join('');
-    var used = state.shots.map(function(s){return shotLetter(s)+' ('+s.pct+'%)';}).join(', ');
-    return '<div class="card-h"><div><h2 id="h3">Final net position</h2><p>'+rows.length+' instruments · '+c.Long+' long · '+c.Short+' short · '+c['Squared Off']+' squared off · Screenshots: '+esc(used)+'</p></div>'
+    var used = state.shots.length ? state.shots.map(function(s){return shotLetter(s)+' ('+s.pct+'%)';}).join(', ') : 'none';
+    var heads = ['Instrument / Asset Name'].concat(hasL?['Source 1 Baseline Qty','Source 1 (⅔rd Qty)']:[],['50% Screenshots Total Qty','50% Qty','100% Screenshots Qty','Final Net Balance Qty','Position Status']);
+    var thead = '<tr>'+heads.map(function(h){return '<th>'+h+'</th>';}).join('')+'</tr>';
+    var tfoot = '<tr><td>Total</td>'+(hasL?'<td class="num">'+fmt(t.ledger)+'</td><td class="num">'+fmt(t.l23)+'</td>':'')
+      +'<td class="num">'+fmt(t.half)+'</td><td class="num">'+fmt(t.h)+'</td><td class="num">'+fmt(t.full)+'</td><td class="num">'+fmt(t.fin)+'</td><td></td></tr>';
+    var note = 'Final = ⅔ of ledger − 50% of the 50% screenshots − 100% of the 100% screenshots. Positive is long, negative is short, zero is squared off. Ledger quantities under the Sale column are negative. Missing instruments count as 0. Totals mix units (shares and lots), so use them only as a check.'
+      + (hasL ? '' : ' No ledger PDF was added, so the ledger quantity is 0 for every instrument and each final value is the negative of its screenshot share.');
+    return '<div class="card-h"><div><h2 id="h3">Final net position</h2><p>'+rows.length+' instruments · '+c.Long+' long · '+c.Short+' short · '+c['Squared Off']+' squared off · Screenshots: '+esc(used)+' · '+(hasL?'Ledger: '+esc(state.ledger.fileName):'No ledger')+'</p></div>'
       +'<div class="row"><button class="btn" data-act="copy-md">Copy markdown</button><button class="btn primary" data-act="download">Download .xlsx</button></div></div>'
-      +'<div class="tw"><table><thead><tr><th>Instrument / Asset Name</th><th>Source 1 Baseline Qty</th><th>Source 1 (⅔rd Qty)</th><th>50% Screenshots Total Qty</th><th>50% Qty</th><th>100% Screenshots Qty</th><th>Final Net Balance Qty</th><th>Position Status</th></tr></thead><tbody>'+body+'</tbody>'
-      +'<tfoot><tr><td>Total</td><td class="num">'+fmt(t.ledger)+'</td><td class="num">'+fmt(t.l23)+'</td><td class="num">'+fmt(t.half)+'</td><td class="num">'+fmt(t.h)+'</td><td class="num">'+fmt(t.full)+'</td><td class="num">'+fmt(t.fin)+'</td><td></td></tr></tfoot></table></div>'
-      +'<p class="note">Final = ⅔ of ledger − 50% of the 50% screenshots − 100% of the 100% screenshots. Positive is long, negative is short, zero is squared off. Ledger quantities under the Sale column are negative. Missing instruments count as 0. Totals mix units (shares and lots), so use them only as a check.</p>'
-      +'<details><summary>Markdown table</summary><textarea class="md" id="md" readonly>'+esc(toMarkdown(rows))+'</textarea></details>';
+      +'<div class="tw"><table><thead>'+thead+'</thead><tbody>'+body+'</tbody><tfoot>'+tfoot+'</tfoot></table></div>'
+      +'<p class="note">'+note+'</p>'
+      +'<details><summary>Markdown table</summary><textarea class="md" id="md" readonly>'+esc(toMarkdown(rows,!hasL))+'</textarea></details>';
   }
-  function resultCard(){ return state.showResult && state.ledger ? '<section class="card" id="result" aria-labelledby="h3">'+resultInner()+'</section>' : ''; }
+  function resultCard(){ return state.showResult && canCalc() ? '<section class="card" id="result" aria-labelledby="h3">'+resultInner()+'</section>' : ''; }
   function stepsHTML(){
-    var s1=state.ledger?'done':'on', s2=state.ledger?(state.shots.length&&!state.shots.some(function(x){return !x.pct;})?'done':'on'):'', s3=state.showResult?'on':'';
-    return '<ol class="steps"><li class="'+s1+'"><span class="n">'+(s1==='done'?'✓':'1')+'</span><span class="t">Ledger PDF</span></li><li class="'+s2+'"><span class="n">'+(s2==='done'?'✓':'2')+'</span><span class="t">Screenshots</span></li><li class="'+s3+'"><span class="n">3</span><span class="t">Final table</span></li></ol>';
+    var allSet = state.shots.length>0 && !pendingShot();
+    var s1 = allSet ? 'done' : 'on', s2 = state.ledger ? 'done' : '', s3 = state.showResult ? 'on' : '';
+    return '<ol class="steps"><li class="'+s1+'"><span class="n">'+(s1==='done'?'✓':'1')+'</span><span class="t">Screenshots</span></li>'
+      +'<li class="'+s2+'"><span class="n">'+(s2==='done'?'✓':'2')+'</span><span class="t">Ledger PDF · optional</span></li>'
+      +'<li class="'+s3+'"><span class="n">3</span><span class="t">Final table</span></li></ol>';
   }
   function render(){
-    app.innerHTML = '<header><p class="eyebrow">Net open position</p><h1>Position Reconciler</h1><p class="lede">Upload the ledger PDF, then your broker screenshots one at a time. Get the adjusted net position for every instrument.</p>'
+    app.innerHTML = '<header><p class="eyebrow">Net open position</p><h1>Position Reconciler</h1><p class="lede">Upload your broker screenshots one at a time and pick 50% or 100% for each. Add the ledger PDF below if you want it included.</p>'
       +'<div class="formula"><span>Final</span><b>=</b><span>⅔ × Ledger</span><b>−</b><span>50% × Shots</span><b>−</b><span>100% × Shots</span></div></header>'
-      +'<div id="steps">'+stepsHTML()+'</div>'+ledgerCard()+shotsCard()+resultCard();
+      +'<div id="steps">'+stepsHTML()+'</div>'+shotsCard()+ledgerCard()+resultCard();
     bindZones();
   }
   function refreshAll(){
     var st=$('#steps'); if(st) st.innerHTML=stepsHTML();
-    var res=$('#result'); if(res && state.ledger) res.innerHTML=resultInner();
+    var res=$('#result'); if(res && canCalc()) res.innerHTML=resultInner();
     // update the action row without rebuilding the cards that hold open selects/inputs
     var btn=$('[data-act="calc"]'); if(btn){ var host=btn.parentElement; var fresh=document.createElement('div'); fresh.innerHTML=shotsCard(); var nr=fresh.querySelector('[data-act="calc"]').parentElement; host.innerHTML=nr.innerHTML; var z=$('#zone-shot, .zone.off', $('.card[aria-labelledby="h2"]')); var nz=fresh.querySelector('#zone-shot, .zone.off'); if(z&&nz&&z.outerHTML!==nz.outerHTML){ z.replaceWith(nz); bindZones(); } }
   }
@@ -478,11 +501,12 @@ function toMarkdown(rows) {
     if(k==='lname') state.ledger.rows[+t.dataset.i].name=t.value;
     else if(k==='lqty'){ var v=parseFloat(String(t.value).replace(/,/g,'')); state.ledger.rows[+t.dataset.i].qty=isFinite(v)?v:0; var c=$('#l23-'+t.dataset.i); if(c) c.textContent=fmt((isFinite(v)?v:0)*2/3); }
     else { var s=shotById(t.dataset.s), r=s.rows[+t.dataset.i]; if(k==='name') r.name=t.value; else { var q=parseFloat(String(t.value).replace(/,/g,'')); r.qty=isFinite(q)?q:0; } }
-    var res=$('#result'); if(res && state.ledger) res.innerHTML=resultInner();
+    var res=$('#result'); if(res && canCalc()) res.innerHTML=resultInner();
   });
   app.addEventListener('click',function(e){
     var b=e.target.closest('[data-act]'); if(!b || b.tagName==='SELECT') return;
     var a=b.dataset.act;
+    if(a==='remove-ledger'){ state.ledger=null; state.ledgerErr=''; render(); return; }
     if(a==='replace-ledger'){ var i=$('#in-ledger'); if(i) i.click(); return; }
     if(a==='del-ledger-row'){ state.ledger.rows.splice(+b.dataset.i,1); render(); return; }
     if(a==='del-shot'){ var s=shotById(b.dataset.s); try{URL.revokeObjectURL(s.url);}catch(_){} state.shots.splice(state.shots.indexOf(s),1); state.showResult=false; render(); return; }
@@ -496,13 +520,13 @@ function toMarkdown(rows) {
   app.addEventListener('change',function(e){ if(e.target.id==='in-ledger'){ var f=e.target.files&&e.target.files[0]; e.target.value=''; if(f) onLedger(f); } });
 
   async function copyMarkdown(){
-    var md=toMarkdown(compute(state.ledger.rows,state.shots));
+    var md=toMarkdown(compute(ledgerRows(),state.shots),!state.ledger);
     try{ await navigator.clipboard.writeText(md); toast('Markdown copied'); }
     catch(_){ var d=$('#result details'); if(d) d.open=true; var ta=$('#md'); if(ta){ ta.focus(); ta.select(); } toast('Select the text and copy it'); }
   }
   function buildWorkbook(){
-    var rows=compute(state.ledger.rows,state.shots);
-    var rate={}; state.ledger.rows.forEach(function(r){ if(r.rate!=null && isFinite(r.rate)) rate[normName(r.name)]=r.rate; });
+    var rows=compute(ledgerRows(),state.shots);
+    var rate={}; ledgerRows().forEach(function(r){ if(r.rate!=null && isFinite(r.rate)) rate[normName(r.name)]=r.rate; });
     var d=new Date(), pad=function(n){return String(n).padStart(2,'0');};
     var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
     var ws={};
