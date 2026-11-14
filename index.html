@@ -137,7 +137,7 @@ const ALIASES = { 'MINI GOLDMINI': 'GOLDM', 'MINI SILVERMINI': 'SILVERM', 'GOLDM
 function normName(raw) {
   let s = String(raw || '').toUpperCase().replace(/\s+/g, ' ').trim();
   s = s.replace(new RegExp('\\s+(?:' + MONTHS + ')\\s*\\d{1,2}$'), '');
-  s = s.replace(/^(NSE|BSE|NFO|MCX|NCDEX)\s+/, '');
+  s = s.replace(/^(NSE|BSE|NFO|BFO|MCX|NCDEX|SGX|CDS|ICEX)\s+/, '');
   return ALIASES[s] || s;
 }
 
@@ -199,7 +199,8 @@ function parseLedgerPage(lines) {
 // OCR text of a broker "Position" screen -> [{name, qty}] (BUY +, SELL -)
 function parseOcrText(text) {
   const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  const head = new RegExp('(?:^|\\s)(NSE|MCX|NCDEX|MINI|NFO|BSE)\\s+(.+?)\\s+(?:' + MONTHS + ')[a-z]*\\s*\\d{1,2}\\b', 'i');
+  const MON = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec';
+  const head = new RegExp('(?:^|\\s)([A-Z]{2,8})\\s+(.+?)\\s+(?:' + MON + ')[a-z]*\\s*\\d{1,2}\\b');
   const side = /\b(BUY|SELL)\s*[:\-]?\s*([\d,]+(?:\.\d+)?)/i;
   const rows = [];
   let pending = null;
@@ -211,8 +212,7 @@ function parseOcrText(text) {
   for (const line of lines) {
     const h = head.exec(line);
     if (h) {
-      const pre = h[1].toUpperCase();
-      const name = pre === 'NSE' || pre === 'BSE' || pre === 'NFO' ? h[2] : pre + ' ' + h[2];
+      const name = h[1].toUpperCase() + ' ' + h[2];
       const rest = line.slice(h.index + h[0].length);
       const s = side.exec(rest);
       if (s) { commit(name, s); pending = null; } else pending = name;
