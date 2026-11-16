@@ -255,11 +255,12 @@ function compute(ledgerRows, shots) {
       if (s.pct === 50) get(n).half += q; else get(n).full += q;
     }
   }
-  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name)).map(o => {
+  const rank = { 'Long': 0, 'Short': 1, 'Squared Off': 2 };
+  return [...map.values()].map(o => {
     const l23 = o.ledger * 2 / 3, h = o.half * 0.5;
     const fin = l23 - h - o.full;
     return { ...o, l23, h, fin, status: statusOf(fin) };
-  });
+  }).sort((a, b) => rank[a.status] - rank[b.status] || a.name.localeCompare(b.name));
 }
 
 function fmt(n) {
