@@ -112,6 +112,7 @@ td input:focus{border-color:var(--accent);background:var(--surface)}
 td.neg{color:var(--short)} td.pos{color:var(--long)}
 .fin{font-weight:600}
 .note{font-size:13px;color:var(--muted)}
+.issues{margin:0;padding-left:18px;color:var(--short);font-size:13px;display:flex;flex-direction:column;gap:2px}
 .opt{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 8px;margin-left:6px;vertical-align:middle}
 .err-text{color:var(--short);font-size:14px}
 textarea.md{width:100%;min-height:180px;font-family:var(--mono);font-size:12px;color:var(--ink);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px;resize:vertical}
@@ -196,35 +197,65 @@ function parseLedgerPage(lines) {
   return { found: true, rows, buys, sales, warn };
 }
 
+// OCR often misreads one letter of the month ("Nev", "Noy" for "Nov"). Repair it when exactly one month is one edit away.
+const MONTH_NAMES = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+function within1(a, b) {
+  if (a === b) return true;
+  const la = a.length, lb = b.length;
+  if (Math.abs(la - lb) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while (i < la && j < lb) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (la === lb) { i++; j++; } else if (la > lb) i++; else j++;
+  }
+  return edits + (la - i) + (lb - j) <= 1;
+}
+function fixMonth(w) {
+  const u = w.toUpperCase();
+  if (MONTH_NAMES.includes(u)) return u;
+  const hits = MONTH_NAMES.filter(m => within1(u, m));
+  return hits.length === 1 ? hits[0] : null;
+}
+function repairMonths(line) {
+  return line.replace(/\b([A-Za-z]{3})\s+(\d{1,2})\b/g, (m, w, d) => { const f = fixMonth(w); return f ? f + ' ' + d : m; });
+}
+
 // OCR text of a broker "Position" screen -> [{name, qty}] (BUY +, SELL -)
-function parseOcrText(text) {
-  const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+function parseOcrDetailed(text) {
+  const lines = String(text || '').split(/\r?\n/).map(l => repairMonths(l.trim())).filter(Boolean);
   const MON = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec';
   const head = new RegExp('(?:^|\\s)([A-Z]{2,8})\\s+(.+?)\\s+(?:' + MON + ')[a-z]*\\s*\\d{1,2}\\b');
   const side = /\b(BUY|SELL)\s*[:\-]?\s*([\d,]+(?:\.\d+)?)/i;
-  const rows = [];
-  let pending = null;
-  const commit = (name, s) => {
+  const rows = [], issues = [], seen = new Set();
+  let dupes = 0, pending = null;
+  const commit = (hdr, s) => {
     const q = parseFloat(s[2].replace(/,/g, ''));
-    if (!isFinite(q)) return;
-    rows.push({ name: normName(name), qty: /sell/i.test(s[1]) ? -q : q });
+    if (!isFinite(q)) { issues.push('Could not read the quantity for "' + hdr.raw + '"'); return; }
+    const sign = /sell/i.test(s[1]) ? -1 : 1;
+    // The same contract cannot appear twice in one screenshot, so an identical repeat is a stitching overlap.
+    const key = hdr.raw + '|' + sign + '|' + q;
+    if (seen.has(key)) { dupes++; return; }
+    seen.add(key);
+    rows.push({ name: normName(hdr.name), qty: sign * q });
   };
   for (const line of lines) {
     const h = head.exec(line);
     if (h) {
-      const name = h[1].toUpperCase() + ' ' + h[2];
-      const rest = line.slice(h.index + h[0].length);
-      const s = side.exec(rest);
-      if (s) { commit(name, s); pending = null; } else pending = name;
+      if (pending) issues.push('No BUY or SELL quantity found for "' + pending.raw + '"');
+      const hdr = { name: h[1].toUpperCase() + ' ' + h[2], raw: h[0].trim().toUpperCase() };
+      const s = side.exec(line.slice(h.index + h[0].length));
+      if (s) { commit(hdr, s); pending = null; } else pending = hdr;
       continue;
     }
-    if (pending) {
-      const s = side.exec(line);
-      if (s) { commit(pending, s); pending = null; }
-    }
+    const s = side.exec(line);
+    if (pending) { if (s) { commit(pending, s); pending = null; } }
+    else if (s && /^\W*(BUY|SELL)\b/i.test(line)) issues.push('Quantity without a name: "' + line.slice(0, 40) + '"');
   }
-  return rows;
+  if (pending) issues.push('No BUY or SELL quantity found for "' + pending.raw + '"');
+  return { rows, issues, dupes };
 }
+function parseOcrText(text) { return parseOcrDetailed(text).rows; }
 
 function rowsFromModel(arr) {
   const out = [];
@@ -336,7 +367,10 @@ function toMarkdown(rows, hideLedger) {
   function upscale(file){
     return new Promise(function(res,rej){
       var url = URL.createObjectURL(file), img = new Image();
-      img.onload=function(){ var k = img.width < 1200 ? 2 : 1; var c=document.createElement('canvas'); c.width=img.width*k; c.height=img.height*k;
+      img.onload=function(){ var k = img.width>=900 ? 1 : img.width>=500 ? 2 : Math.min(4, Math.max(1, Math.round(850 / img.width)));
+        if(img.height*k>30000 || img.width*k*img.height*k>40e6) k=1;
+        if(img.height>30000){ URL.revokeObjectURL(url); rej(new Error('This image is '+img.height+' px tall, which is more than the browser can read in one go. Split it into two screenshots.')); return; }
+        var c=document.createElement('canvas'); c.width=img.width*k; c.height=img.height*k;
         var g=c.getContext('2d'); g.filter='grayscale(1) contrast(1.15)'; g.drawImage(img,0,0,c.width,c.height); URL.revokeObjectURL(url); res(c); };
       img.onerror=function(){ URL.revokeObjectURL(url); rej(new Error('That image could not be opened.')); };
       img.src=url;
@@ -353,23 +387,26 @@ function toMarkdown(rows, hideLedger) {
       try{
         await worker.setParameters({tessedit_pageseg_mode:'6'});
         var out = await worker.recognize(canvas);
-        return parseOcrText(out.data.text);
+        var det = parseOcrDetailed(out.data.text); det.raw = out.data.text; return det;
       } finally { try{ await worker.terminate(); }catch(e){} }
     })();
-    var timeout = new Promise(function(_,rej){ setTimeout(function(){ rej(new Error('Reading took too long.')); },120000); });
+    var timeout = new Promise(function(_,rej){ setTimeout(function(){ rej(new Error('Reading took too long.')); },300000); });
     return Promise.race([work,timeout]);
   }
+  function imgSize(file){ return new Promise(function(res){ var u=URL.createObjectURL(file), i=new Image(); i.onload=function(){ URL.revokeObjectURL(u); res({w:i.width,h:i.height}); }; i.onerror=function(){ URL.revokeObjectURL(u); res({w:0,h:0}); }; i.src=u; }); }
+  function isLowRes(shot){ return shot.engine==='On-device OCR' && shot.srcWidth>0 && shot.srcWidth<330; }
   async function readShot(shot){
     shot.status='reading'; shot.progress=null; paintShotStatus(shot);
+    var sz = await imgSize(shot.file); shot.srcWidth = sz.w; shot.srcHeight = sz.h; shot.issues=[]; shot.dupes=0; shot.raw='';
     try{
       try{ shot.rows = await readWithClaude(shot.file); shot.engine='Claude vision'; }
       catch(e){
         if(e && e.message!=='no-claude' && e.code && e.code!=='images_unavailable') { shot.note='Claude vision was unavailable ('+e.code+'), used text recognition instead.'; }
-        shot.rows = await readWithOcr(shot.file,function(p){ shot.progress=p; paintShotStatus(shot); }); shot.engine='On-device OCR';
+        var det = await readWithOcr(shot.file,function(p){ shot.progress=p; paintShotStatus(shot); }); shot.rows=det.rows; shot.issues=det.issues; shot.dupes=det.dupes; shot.raw=det.raw; shot.engine='On-device OCR';
       }
       shot.status='ready';
     }catch(e){ shot.status='error'; shot.error=(e&&e.message)||String(e); shot.rows=[]; }
-    paintShotStatus(shot); paintShotRows(shot); refreshAll();
+    paintShotStatus(shot); paintShotRows(shot); var dt=$('#shot-'+shot.id+' details'); if(dt && (isLowRes(shot)||(shot.issues&&shot.issues.length))) dt.open=true; refreshAll();
   }
   function onShot(file){
     if(!file) return;
@@ -384,7 +421,11 @@ function toMarkdown(rows, hideLedger) {
     if(shot.status==='reading') return '<span class="spin" aria-hidden="true"></span><span>Reading positions'+(shot.progress!=null?' · '+shot.progress+'%':'…')+'</span>';
     if(shot.status==='error') return '<span class="chip err">Could not read this screenshot</span><span class="err-text">'+esc(shot.error)+' Add rows below by hand.</span>';
     var n=shot.rows.length;
-    return '<span class="chip '+(n?'ok':'warn')+'">'+n+' position'+(n===1?'':'s')+' read</span><span>'+esc(shot.engine)+'</span>'+(shot.note?'<span class="note">'+esc(shot.note)+'</span>':'');
+    return '<span class="chip '+(n?'ok':'warn')+'">'+n+' position'+(n===1?'':'s')+' read</span><span>'+esc(shot.engine)+'</span>'+(shot.note?'<span class="note">'+esc(shot.note)+'</span>':'')
+      +(shot.srcWidth?'<span class="note">'+shot.srcWidth+' × '+shot.srcHeight+' px</span>':'')
+      +(shot.issues&&shot.issues.length?'<span class="chip err">'+shot.issues.length+' line'+(shot.issues.length===1?'':'s')+' not read, see below</span>':'')
+      +(shot.dupes?'<span class="chip warn">'+shot.dupes+' repeated row'+(shot.dupes===1?'':'s')+' ignored</span>':'')
+      +(isLowRes(shot)?'<span class="chip warn">Low resolution ('+shot.srcWidth+' px wide)</span><span class="note">Rows may be missed and numbers misread. Upload the original full-size screenshot, and check every row below.</span>':'');
   }
   function rowsHTML(shot){
     var body = shot.rows.map(function(r,i){
@@ -392,8 +433,10 @@ function toMarkdown(rows, hideLedger) {
         +'<td><input class="q" aria-label="Quantity" inputmode="decimal" data-k="qty" data-s="'+shot.id+'" data-i="'+i+'" value="'+esc(r.qty)+'"></td>'
         +'<td style="width:1%"><button class="btn ghost" data-act="del-row" data-s="'+shot.id+'" data-i="'+i+'" aria-label="Remove row">✕</button></td></tr>';
     }).join('');
-    return '<div class="tw"><table><thead><tr><th>Instrument</th><th>Qty (sell is negative)</th><th></th></tr></thead><tbody>'+(body||'<tr><td colspan="3" class="note">No positions yet.</td></tr>')+'</tbody></table></div>'
-      +'<div class="row"><button class="btn" data-act="add-row" data-s="'+shot.id+'">Add row</button></div>';
+    var extra = (shot.issues&&shot.issues.length?'<ul class="issues" role="alert">'+shot.issues.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul>':'');
+    var rawBox = shot.raw ? '<details><summary>Raw text the reader saw</summary><textarea class="md" readonly style="min-height:140px">'+esc(shot.raw)+'</textarea></details>' : '';
+    return extra+'<div class="tw"><table><thead><tr><th>Instrument</th><th>Qty (sell is negative)</th><th></th></tr></thead><tbody>'+(body||'<tr><td colspan="3" class="note">No positions yet.</td></tr>')+'</tbody></table></div>'
+      +'<div class="row"><button class="btn" data-act="add-row" data-s="'+shot.id+'">Add row</button></div>'+rawBox;
   }
   function shotHTML(shot){
     var L=shotLetter(shot);
@@ -403,7 +446,7 @@ function toMarkdown(rows, hideLedger) {
     return '<div class="shot" id="shot-'+shot.id+'"><div class="shot-top"><div class="shot-id"><div class="letter" aria-hidden="true">'+L+'</div><img class="thumb" alt="Preview of screenshot '+L+'" src="'+shot.url+'"></div>'
       +'<div class="shot-meta"><b>Screenshot '+L+'</b><small>'+esc(shot.file.name)+'</small><div class="status" id="st-'+shot.id+'" aria-live="polite">'+statusHTML(shot)+'</div></div>'
       +'<div class="shot-side">'+sel+'<button class="btn ghost" data-act="del-shot" data-s="'+shot.id+'">Remove</button></div></div>'
-      +'<details'+(shot.status==='error'?' open':'')+'><summary>Review and edit positions</summary><div id="rows-'+shot.id+'" style="display:flex;flex-direction:column;gap:10px;margin-top:10px">'+rowsHTML(shot)+'</div></details></div>';
+      +'<details'+(shot.status==='error'||isLowRes(shot)||(shot.issues&&shot.issues.length)?' open':'')+'><summary>Review and edit positions</summary><div id="rows-'+shot.id+'" style="display:flex;flex-direction:column;gap:10px;margin-top:10px">'+rowsHTML(shot)+'</div></details></div>';
   }
   function paintShotStatus(shot){ var el=$('#st-'+shot.id); if(el) el.innerHTML=statusHTML(shot); }
   function paintShotRows(shot){ var el=$('#rows-'+shot.id); if(el) el.innerHTML=rowsHTML(shot); }
